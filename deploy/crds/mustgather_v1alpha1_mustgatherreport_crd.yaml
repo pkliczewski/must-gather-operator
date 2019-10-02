@@ -9,6 +9,9 @@ spec:
     listKind: MustGatherReportList
     plural: mustgatherreports
     singular: mustgatherreport
+    shortNames:
+    - mgr
+    - mgrs
   scope: Namespaced
   subresources:
     status: {}
