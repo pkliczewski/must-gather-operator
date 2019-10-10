@@ -2,7 +2,8 @@ apiVersion: mustgather.openshift.io/v1alpha1
 kind: MustGatherReport
 metadata:
   name: example-mustgatherreport
+  namespace: openshift-must-gather
 spec:
   # Add fields here
   images:
-  - quay.io/kubevirt/must-gather
+  - quay.io/openshift/origin-must-gather

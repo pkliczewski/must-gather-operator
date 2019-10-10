@@ -5,6 +5,7 @@ metadata:
 subjects:
 - kind: ServiceAccount
   name: must-gather-operator
+  namespace: openshift-must-gather
 roleRef:
   kind: ClusterRole
   name: cluster-admin

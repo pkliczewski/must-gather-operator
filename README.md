@@ -16,10 +16,11 @@ docker push quay.io/$USER/must-gather-operator:v0.0.1
 # Installation
 ```bash
 kubectl create -f deploy/crds/mustgather_v1alpha1_mustgatherreport_crd.yaml
-kubectl create -f deploy/service_account.yaml
-kubectl create -f deploy/role.yaml
-kubectl create -f deploy/role_binding.yaml
-kubectl create -f deploy/operator.yaml
+kubectl create -f deploy/02-namespace.yaml
+kubectl create -f deploy/03-cluster-operator.yaml
+kubectl create -f deploy/04-service_account.yaml
+kubectl create -f deploy/05-role_binding.yaml
+kubectl create -f deploy/06-operator.yaml
 ```
 
 # Create Fedora virtual machine
@@ -43,7 +44,18 @@ kubectl get mustgatherreport example-mustgatherreport
 
 # Troubleshooting
 
-TBD
+The Pods for must-gather are being created with a new persistent volume claim as their volume using the default storage class.
+If there is no storage-class defined, the must-gather will fail. In order to define a storage class as the default follow:
+```bash
+  kubectl patch storageclass <your-class-name> -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+```
+
+Verify default storage class is set by:
+```bash
+kubectl get storageclass
+NAME              PROVISIONER                    AGE
+local (default)   kubernetes.io/no-provisioner   142m
+```
 
 # Development
 After cloning the repository, run the operator locally using:

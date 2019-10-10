@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: must-gather-operator
+  namespace: openshift-must-gather
 spec:
   replicas: 1
   selector:
@@ -16,7 +17,7 @@ spec:
       containers:
         - name: must-gather-operator
           # Replace this with the built image name
-          image: REPLACE_IMAGE
+          image: quay.io/masayag/must-gather-operator:v0.0.1
           command:
           - must-gather-operator
           imagePullPolicy: Always
