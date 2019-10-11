@@ -179,6 +179,7 @@ func (r *ReconcileMustGatherReport) runMustGather(cr *mustgatherv1alpha1.MustGat
 	defaultStorageClass := r.getDefaultStorageClass()
 	if defaultStorageClass == "" {
 		log.Error(err, "Failed to create pvc, no default storage class defined")
+		return err
 	}
 
 	for _, image := range cr.Spec.Images {
