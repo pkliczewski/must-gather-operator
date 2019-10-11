@@ -73,7 +73,7 @@ operator-sdk generate k8s
 In order to debug the operator locally using 'dlv', start the operator locally by running (assuming namespace is 'default'):
 ```bash
 operator-sdk build quay.io/$USER/must-gather-operator:v0.0.1
-operator-sdk up local  --enable-delve --namespace=default
+operator-sdk up local  --enable-delve --namespace=openshift-must-gather
 ```
 Kubernetes cluster should be avaiable and pointed by `~/.kube/config`.
 The CRDs of `./deploy/crds/` should be applied on it.
