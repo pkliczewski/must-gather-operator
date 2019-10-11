@@ -2,13 +2,22 @@ package mustgatherreport
 
 import (
 	"context"
+	"fmt"
+	"path"
+	"sync"
+	"time"
 
 	mustgatherv1alpha1 "github.com/masayag/must-gather-operator/pkg/apis/mustgather/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	errorsutils "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -21,10 +30,13 @@ import (
 
 var log = logf.Log.WithName("controller_mustgatherreport")
 
-/**
-* USER ACTION REQUIRED: This is a scaffold file intended for the user to modify with their own Controller
-* business logic.  Delete these comments after modifying this file.*
- */
+const (
+	// SourceDir points to folder on PV to write and copy files from for gather data
+	SourceDir = "/must-gather/"
+
+	// CreatedByLabel label is used as a marker for pods that are owned by MustGatherReport CR
+	CreatedByLabel = "must-gather/created-by"
+)
 
 // Add creates a new MustGatherReport Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
@@ -100,54 +112,272 @@ func (r *ReconcileMustGatherReport) Reconcile(request reconcile.Request) (reconc
 		return reconcile.Result{}, err
 	}
 
-	// Define a new Pod object
-	pod := newPodForCR(instance)
-
-	// Set MustGatherReport instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, pod, r.scheme); err != nil {
+	if ok, err := r.IsValid(instance); !ok {
 		return reconcile.Result{}, err
 	}
 
-	// Check if this Pod already exists
-	found := &corev1.Pod{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Pod", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
-		err = r.client.Create(context.TODO(), pod)
+	if ok := r.IsCompleted(instance); ok {
+		reqLogger.Info("Skip reconcile: must-gather report is already created", "MustGatherReport.Namespace", instance.Namespace,
+			"MustGatherReport.Name", instance.Name, "MustGatherReport.Status.ReportURL", instance.Status.ReportURL)
+		return reconcile.Result{}, nil
+	}
+
+	podList := &corev1.PodList{}
+	labelSelector := labels.SelectorFromSet(labelsForMustGather(instance.Name))
+	listOps := &client.ListOptions{
+		Namespace:     instance.Namespace,
+		LabelSelector: labelSelector,
+	}
+	err = r.client.List(context.TODO(), listOps, podList)
+	if err != nil {
+		reqLogger.Error(err, "Failed to list pods.", "MustGatherReport.Namespace", instance.Namespace, "MustGatherReport.Name", instance.Name)
+		return reconcile.Result{}, err
+	}
+
+	if len(podList.Items) == 0 {
+		// Create and run pods for gathering diagnostic data
+		err = r.runMustGather(instance)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
-
-		// Pod created successfully - don't requeue
-		return reconcile.Result{}, nil
-	} else if err != nil {
-		return reconcile.Result{}, err
 	}
 
-	// Pod already exists - don't requeue
-	reqLogger.Info("Skip reconcile: Pod already exists", "Pod.Namespace", found.Namespace, "Pod.Name", found.Name)
+	// TODO: update pod status with Report URL after compressing & exposing the resource
 	return reconcile.Result{}, nil
 }
 
-// newPodForCR returns a busybox pod with the same name/namespace as the cr
-func newPodForCR(cr *mustgatherv1alpha1.MustGatherReport) *corev1.Pod {
-	labels := map[string]string{
-		"app": cr.Name,
+// IsValid checks the validity of the MustGatherReport cr
+func (r *ReconcileMustGatherReport) IsValid(obj metav1.Object) (bool, error) {
+	cr, ok := obj.(*mustgatherv1alpha1.MustGatherReport)
+	if !ok {
+		return false, fmt.Errorf("not a MustGatherReport object")
 	}
-	return &corev1.Pod{
+
+	if len(cr.Spec.Images) == 0 {
+		return false, fmt.Errorf("missing an image")
+	}
+
+	return true, nil
+}
+
+// IsCompleted checks if the report was created and available for download
+func (r *ReconcileMustGatherReport) IsCompleted(cr *mustgatherv1alpha1.MustGatherReport) bool {
+	return len(cr.Status.ReportURL) > 0
+}
+
+// Run creates and runs a must-gather pod.d
+func (r *ReconcileMustGatherReport) runMustGather(cr *mustgatherv1alpha1.MustGatherReport) error {
+	var err error
+	log := log.WithValues("MustGatherReport.Namespace", cr.Namespace, "MustGatherReport.Name", cr.Name)
+
+	// create pods
+	var pods []*corev1.Pod
+	var pod *corev1.Pod
+	var pvc *corev1.PersistentVolumeClaim
+
+	// TODO: if there is only one storage-class which isn't set as default, use it
+	defaultStorageClass := r.getDefaultStorageClass()
+	if defaultStorageClass == "" {
+		log.Error(err, "Failed to create pvc, no default storage class defined")
+	}
+
+	for _, image := range cr.Spec.Images {
+		pvc = r.newPVC(cr, cr.Namespace, &defaultStorageClass)
+		if err := r.client.Create(context.TODO(), pvc); err != nil {
+			log.Error(err, "Failed to create pvc")
+		}
+		if err := controllerutil.SetControllerReference(cr, pvc, r.scheme); err != nil {
+			return err
+		}
+
+		pod = r.newPod(image, cr, cr.Namespace, pvc)
+		err := r.client.Create(context.TODO(), pod)
+		if err != nil {
+			return err
+		}
+
+		// Set MustGatherReport instance as the owner and controller
+		err = controllerutil.SetControllerReference(cr, pod, r.scheme)
+		if err != nil {
+			return err
+		}
+
+		log.Info("pod for plug-in Image created", "Image", image)
+		pods = append(pods, pod)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(len(pods))
+	errs := make(chan error, len(pods))
+	for _, pod := range pods {
+		go func(pod *corev1.Pod) {
+			defer wg.Done()
+
+			// wait for gather container to be running (gather is running)
+			if err := r.waitForGatherContainerRunning(pod); err != nil {
+				log.Info("gather did not start: Message", "Message", err)
+				errs <- fmt.Errorf("gather did not start for pod %s: %s", pod.Name, err)
+				return
+			}
+
+			// wait for pod to be running (gather has completed)
+			log.Info("waiting for gather to complete")
+			if err := r.waitForPodRunning(pod); err != nil {
+				log.Error(err, "gather never finished")
+				errs <- fmt.Errorf("gather never finished for pod %s: %s", pod.Name, err)
+				return
+			}
+		}(pod)
+	}
+	wg.Wait()
+	close(errs)
+	var arr []error
+	for i := range errs {
+		arr = append(arr, i)
+	}
+	errors := errorsutils.NewAggregate(arr)
+	log.Info("Gather for all images finished: Message", "Message", errors)
+	return errors
+}
+
+func (r *ReconcileMustGatherReport) waitForPodRunning(pod *corev1.Pod) error {
+	phase := pod.Status.Phase
+	gatherPod := &corev1.Pod{}
+	err := wait.PollImmediate(time.Second, 10*time.Minute, func() (bool, error) {
+		var err error
+		if err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, gatherPod); err == nil {
+			return false, nil
+		}
+		phase = pod.Status.Phase
+		return phase != corev1.PodPending, nil
+	})
+	if err != nil {
+		return err
+	}
+	if phase != corev1.PodRunning {
+		return fmt.Errorf("pod is not running: %v", phase)
+	}
+	return nil
+}
+
+func (r *ReconcileMustGatherReport) waitForGatherContainerRunning(pod *corev1.Pod) error {
+	gatherPod := &corev1.Pod{}
+	return wait.PollImmediate(time.Second, 10*time.Minute, func() (bool, error) {
+		var err error
+		if err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, gatherPod); err == nil {
+			if len(gatherPod.Status.InitContainerStatuses) == 0 {
+				return false, nil
+			}
+			state := gatherPod.Status.InitContainerStatuses[0].State
+			if state.Waiting != nil && state.Waiting.Reason == "ErrImagePull" {
+				return true, fmt.Errorf("unable to pull image: %v: %v", state.Waiting.Reason, state.Waiting.Message)
+			}
+			running := state.Running != nil
+			terminated := state.Terminated != nil
+			return running || terminated, nil
+		}
+		return false, err
+	})
+}
+
+func labelsForMustGather(name string) map[string]string {
+	return map[string]string{"app": "must-gather", CreatedByLabel: name}
+}
+
+func (r *ReconcileMustGatherReport) getDefaultStorageClass() string {
+	storageClassList := &storagev1.StorageClassList{}
+	err := r.client.List(context.TODO(), &client.ListOptions{}, storageClassList)
+	if err != nil {
+		return ""
+	}
+
+	for _, sc := range storageClassList.Items {
+		if sc.GetAnnotations()["storageclass.kubernetes.io/is-default-class"] == "true" {
+			return sc.Name
+		}
+	}
+
+	return ""
+}
+
+func (r *ReconcileMustGatherReport) newPVC(cr *mustgatherv1alpha1.MustGatherReport, nsName string, storageClass *string) *corev1.PersistentVolumeClaim {
+	return &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-pod",
-			Namespace: cr.Namespace,
-			Labels:    labels,
+			GenerateName: "must-gather-",
+			Namespace:    nsName,
+			Labels:       labelsForMustGather(cr.Name),
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("5Gi"),
+				},
+			},
+			StorageClassName: storageClass,
+		},
+	}
+}
+
+// newPod creates a pod with 2 containers with a shared volume mount:
+// - gather: init containers that run gather command
+// - copy: no-op container we can exec into
+func (r *ReconcileMustGatherReport) newPod(image string, cr *mustgatherv1alpha1.MustGatherReport, nsName string, pvc *corev1.PersistentVolumeClaim) *corev1.Pod {
+	zero := int64(0)
+	ret := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "must-gather-",
+			Labels:       labelsForMustGather(cr.Name),
+			Namespace:    nsName,
 		},
 		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Volumes: []corev1.Volume{
+				{
+					Name: "must-gather-output",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: pvc.Name,
+							ReadOnly:  false,
+						},
+					},
+				},
+			},
+			InitContainers: []corev1.Container{
+				{
+					Name:    "gather",
+					Image:   image,
+					Command: []string{"/usr/bin/gather"},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "must-gather-output",
+							MountPath: path.Clean(SourceDir),
+							ReadOnly:  false,
+						},
+					},
+				},
+			},
 			Containers: []corev1.Container{
 				{
-					Name:    "busybox",
-					Image:   "busybox",
-					Command: []string{"sleep", "3600"},
+					Name:    "copy",
+					Image:   image,
+					Command: []string{"/bin/bash", "-c", "trap : TERM INT; sleep infinity & wait"},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "must-gather-output",
+							MountPath: path.Clean(SourceDir),
+							ReadOnly:  false,
+						},
+					},
+				},
+			},
+			TerminationGracePeriodSeconds: &zero,
+			Tolerations: []corev1.Toleration{
+				{
+					Operator: "Exists",
 				},
 			},
 		},
 	}
+	return ret
 }
