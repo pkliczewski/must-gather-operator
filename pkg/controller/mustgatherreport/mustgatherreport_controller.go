@@ -8,6 +8,7 @@ import (
 	"time"
 
 	mustgatherv1alpha1 "github.com/masayag/must-gather-operator/pkg/apis/mustgather/v1alpha1"
+	"github.com/openshift/library-go/pkg/operator/resource/retry"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -246,10 +247,10 @@ func (r *ReconcileMustGatherReport) waitForPodRunning(pod *corev1.Pod) error {
 	gatherPod := &corev1.Pod{}
 	err := wait.PollImmediate(time.Second, 10*time.Minute, func() (bool, error) {
 		var err error
-		if err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, gatherPod); err == nil {
-			return false, nil
+		if err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, gatherPod); err != nil {
+			return false, err
 		}
-		phase = pod.Status.Phase
+		phase = gatherPod.Status.Phase
 		return phase != corev1.PodPending, nil
 	})
 	if err != nil {
@@ -276,6 +277,9 @@ func (r *ReconcileMustGatherReport) waitForGatherContainerRunning(pod *corev1.Po
 			running := state.Running != nil
 			terminated := state.Terminated != nil
 			return running || terminated, nil
+		}
+		if retry.IsHTTPClientError(err) {
+			return false, nil
 		}
 		return false, err
 	})
