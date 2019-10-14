@@ -23,7 +23,7 @@ kubectl create -f deploy/05-role_binding.yaml
 kubectl create -f deploy/06-operator.yaml
 ```
 
-# Create Fedora virtual machine
+# Create Must Gather Report
 ```bash
 cat <<EOF | kubectl create -f -
 apiVersion: mustgather.openshift.io/v1alpha1
@@ -62,7 +62,7 @@ After cloning the repository, run the operator locally using:
 ```bash
 export GO111MODULE=on
 go mod vendor
-operator-sdk up local --namespace=default
+operator-sdk up local --namespace=operator-must-gather
 ```
 
 After changes to types file run:
@@ -70,7 +70,7 @@ After changes to types file run:
 operator-sdk generate k8s
 ```
 
-In order to debug the operator locally using 'dlv', start the operator locally by running (assuming namespace is 'default'):
+In order to debug the operator locally using 'dlv', start the operator locally by running (assuming namespace is 'openshift-must-gather'):
 ```bash
 operator-sdk build quay.io/$USER/must-gather-operator:v0.0.1
 operator-sdk up local  --enable-delve --namespace=openshift-must-gather
