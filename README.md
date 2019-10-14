@@ -30,6 +30,7 @@ apiVersion: mustgather.openshift.io/v1alpha1
 kind: MustGatherReport
 metadata:
   name: example-mustgatherreport
+  namespace: openshift-must-gather
 spec:
   images:
   - quay.io/kubevirt/must-gather
@@ -62,7 +63,7 @@ After cloning the repository, run the operator locally using:
 ```bash
 export GO111MODULE=on
 go mod vendor
-operator-sdk up local --namespace=operator-must-gather
+operator-sdk up local --namespace=openshift-must-gather
 ```
 
 After changes to types file run:
