@@ -168,7 +168,7 @@ func (r *ReconcileMustGatherReport) IsCompleted(cr *mustgatherv1alpha1.MustGathe
 
 // Run creates and runs a must-gather pod.d
 func (r *ReconcileMustGatherReport) runMustGather(cr *mustgatherv1alpha1.MustGatherReport) error {
-	var err error
+	var pvcStorageClass *string
 	log := log.WithValues("MustGatherReport.Namespace", cr.Namespace, "MustGatherReport.Name", cr.Name)
 
 	// create pods
@@ -176,15 +176,15 @@ func (r *ReconcileMustGatherReport) runMustGather(cr *mustgatherv1alpha1.MustGat
 	var pod *corev1.Pod
 	var pvc *corev1.PersistentVolumeClaim
 
-	// TODO: if there is only one storage-class which isn't set as default, use it
 	defaultStorageClass := r.getDefaultStorageClass()
 	if defaultStorageClass == "" {
-		log.Error(err, "Failed to create pvc, no default storage class defined")
-		return err
+		pvcStorageClass = nil
+	} else {
+		pvcStorageClass = &defaultStorageClass
 	}
 
 	for _, image := range cr.Spec.Images {
-		pvc = r.newPVC(cr, cr.Namespace, &defaultStorageClass)
+		pvc = r.newPVC(cr, cr.Namespace, pvcStorageClass)
 		if err := r.client.Create(context.TODO(), pvc); err != nil {
 			log.Error(err, "Failed to create pvc")
 		}
