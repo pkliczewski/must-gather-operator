@@ -361,12 +361,35 @@ func (r *ReconcileMustGatherReport) newPod(image string, cr *mustgatherv1alpha1.
 						},
 					},
 				},
-			},
-			Containers: []corev1.Container{
 				{
 					Name:    "copy",
 					Image:   image,
 					Command: []string{"/bin/bash", "-c", "trap : TERM INT; sleep infinity & wait"},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "must-gather-output",
+							MountPath: path.Clean(SourceDir),
+							ReadOnly:  false,
+						},
+					},
+				},
+			},
+			Containers: []corev1.Container{
+				{
+					Name:    "compress",
+					Image:   "quay.io/pkliczewski/fileops",
+					Command: []string{"./out/fileops"},
+					Env: []corev1.EnvVar{
+						{
+							Name:  "MINUTES",
+							Value: "5",
+						},
+						// TODO: we need to use one or the other
+						// {
+						// 	Name:  "LINES",
+						// 	Value: "100",
+						// },
+					},
 					VolumeMounts: []corev1.VolumeMount{
 						{
 							Name:      "must-gather-output",

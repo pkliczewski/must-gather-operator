@@ -9,7 +9,7 @@ export GO111MODULE=on
 operator-sdk generate k8s # if changes made to *_types.go
 go mod vendor
 operator-sdk build quay.io/$USER/must-gather-operator:v0.0.1
-sed -i "s|REPLACE_IMAGE|quay.io/$USER/must-gather-operator:v0.0.1|g" deploy/operator.yaml
+sed -i "s|REPLACE_IMAGE|quay.io/$USER/must-gather-operator:v0.0.1|g" deploy/06-operator.yaml
 docker push quay.io/$USER/must-gather-operator:v0.0.1
 ```
 
